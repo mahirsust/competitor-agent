@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+      - run: composer install --prefer-dist --no-progress
+      - run: ./vendor/bin/pint --test
+      - run: ./vendor/bin/phpstan analyse --memory-limit=512M
+
+  unit:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+      - run: composer install --prefer-dist --no-progress
+      - run: cp .env.testing .env
+      - run: php artisan key:generate
+      - run: php artisan test --testsuite=Unit
+
+  integration:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+      - run: composer install --prefer-dist --no-progress
+      - run: cp .env.testing .env
+      - run: php artisan key:generate
+      - run: php artisan test --testsuite=Integration
+
+  contract:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+      - run: composer install --prefer-dist --no-progress
+      - run: docker compose -f docker-compose.yml up -d brave-search-mcp report-writer-mcp pdf-exporter-mcp mysql
+        env:
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY_CI }}
+      - run: |
+          timeout 60 bash -c 'until curl -sf http://localhost:3100/tools/list -X POST; do sleep 2; done'
+      - run: cp .env.testing .env
+      - run: php artisan key:generate
+      - run: php artisan test --testsuite=Contract
+      - if: always()
+        run: docker compose down -v
+
+  loop-simulation:
+    needs: [unit, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+      - run: composer install --prefer-dist --no-progress
+      - run: cp .env.testing .env
+      - run: php artisan key:generate
+      - run: php artisan test --testsuite=LoopSimulation
+
+  auth:
+    needs: [unit, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+      - run: composer install --prefer-dist --no-progress
+      - run: cp .env.testing .env
+      - run: php artisan key:generate
+      - run: php artisan test --testsuite=Auth
+
+  infrastructure:
+    needs: [unit, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker run --rm -v ${{ github.workspace }}/docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro nginx:1.27-alpine nginx -t

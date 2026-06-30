@@ -1,0 +1,44 @@
+name: Nightly evaluation
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+      - run: composer install --prefer-dist --no-progress
+
+      - run: docker compose -f docker-compose.yml up -d
+        env:
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY_EVAL }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY_EVAL }}
+      - run: |
+          timeout 60 bash -c 'until curl -sf http://localhost:3100/tools/list -X POST; do sleep 2; done'
+      - run: cp .env.testing.eval .env
+      - run: php artisan key:generate
+      - run: php artisan migrate --force
+
+      - run: php artisan agent:evaluate --prompts=tests/fixtures/eval-prompts.json --output=eval-results.json
+
+      - name: Upload evaluation report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.run_number }}
+          path: eval-results.json
+          retention-days: 90
+
+      - name: Post trend summary
+        if: always()
+        run: php artisan agent:eval-summary --results=eval-results.json --post-to-slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.EVAL_SLACK_WEBHOOK }}
+
+      - if: always()
+        run: docker compose down -v
